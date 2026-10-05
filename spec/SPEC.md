@@ -266,6 +266,9 @@ Possible categories:
 
 The categorization may be proposed by the LLM but must be stored as an observation/inference rather than presented as psychological fact.
 
+A fast first pass may run on the local decision model (Von); low-confidence
+categorizations escalate to the generative LLM.
+
 ---
 
 # 8. Behavioral Model
@@ -876,6 +879,10 @@ If the LLM fails validation:
 2. otherwise use the deterministic ranking.
 
 Executor must continue functioning without an LLM response.
+
+A cheap local pre-pass — Von scoring candidate descriptions against selection
+criteria — may narrow or gate the candidate set first. It is optional and must
+never override deterministic constraints.
 
 ---
 
@@ -1537,10 +1544,13 @@ EXECUTOR_LOG_LEVEL
 EXECUTOR_API_HOST
 EXECUTOR_API_PORT
 
-LLM_PROVIDER
 LLM_MODEL
-LLM_BASE_URL
-LLM_API_KEY
+
+ZAI_API_KEY
+ZAI_BASE_URL
+
+VON_BASE_URL
+VON_DEVICE
 
 RUNTIME_PROVIDER
 
@@ -1552,7 +1562,7 @@ TIMEZONE
 GIT_REPOSITORY_PATH
 ```
 
-These are examples, not necessarily the final names.
+These are examples, not necessarily the final names. The LLM provider itself is decided: the z.ai Coding Plan endpoint authenticated by `ZAI_API_KEY` (see §49.2); `ZAI_BASE_URL` defaults to `https://api.z.ai/api/coding/paas/v4`. Von runs locally and needs no key (`VON_API_KEY` is optional, local-network auth only).
 
 The implementation agent must determine provider-specific variables from the actual selected provider/runtime documentation rather than inventing them.
 
@@ -1580,21 +1590,23 @@ The agent must not silently install a competing runtime.
 
 ## 49.2 LLM provider
 
-Determine:
+Resolved:
 
 ```text
-provider
-API endpoint
-model
-API key availability
-local vs remote inference
-vision requirement
-embedding requirement, if any
+provider:            z.ai Coding Plan subscription
+endpoint:            https://api.z.ai/api/coding/paas/v4 (OpenAI-compatible)
+credential:          ZAI_API_KEY (already present in .env; never committed)
+model:               selected via LLM_MODEL from the coding plan's models
+                     (confirm the exact current model id during preflight)
+local inference:     bounded decisions run locally on Von; generation is remote
+vision:              not required for v0.1
+embeddings:          not required for v0.1
 ```
 
-The agent should support an OpenAI-compatible provider where practical.
+Talk to the coding-plan endpoint using the OpenAI-compatible request format.
 
-Do not assume a specific provider.
+Executor uses `ZAI_API_KEY` only. Do not use `OPENAI_API_KEY` or any other
+provider key.
 
 ---
 
@@ -1672,13 +1684,15 @@ Before implementation, the agent must generate an exact checklist based on the s
 At minimum, determine whether these are required:
 
 ```text
-LLM API credentials
+ZAI_API_KEY (z.ai Coding Plan)
 runtime credentials
 messaging credentials
 remote access credentials
 Git credentials, if remote Git operations are required
-optional embedding credentials
 ```
+
+Von is local and needs no credentials; `VON_API_KEY` is optional and only
+guards the local decision service.
 
 The agent must tell the user exactly:
 
@@ -1883,6 +1897,9 @@ events still record
 deterministic selection still works
 ```
 
+If the local decision model (Von) is unavailable, classification and gating fall
+back to the generative LLM or safe defaults; deterministic selection is unaffected.
+
 If SQLite is temporarily unavailable:
 
 ```text
@@ -1983,7 +2000,7 @@ Conceptually:
 ```text
 raw capture
     ↓
-LLM classification
+Von fast-path classification (escalate to LLM)
     ↓
 structured proposal
     ↓
@@ -2445,7 +2462,8 @@ This command should check:
 database
 migrations
 configuration
-LLM connectivity
+LLM connectivity (z.ai coding plan)
+Von decision service
 runtime connectivity
 Git repository
 data directory
@@ -2592,7 +2610,9 @@ The implementation must make no assumption that sending all data to an external 
 
 Context passed to the LLM should be deliberately selected.
 
-The provider boundary should make local inference possible.
+The provider boundary includes a local tier by design: bounded decisions
+(classification, gating, triage) run on Von on this machine; only work that
+genuinely needs generation leaves for z.ai.
 
 ---
 
@@ -2600,12 +2620,30 @@ The provider boundary should make local inference possible.
 
 Executor should not embed one vendor's API throughout the code.
 
-The minimum conceptual interface is:
+Two provider classes, both behind one boundary:
+
+Remote generative LLM — z.ai Coding Plan, OpenAI-compatible:
 
 ```text
 generate_structured(...)
 generate_text(...)
 ```
+
+Local decision model — Von (395M encoder, CPU-served, sub-15ms), run as a
+shared local `von serve` daemon so both executor-core and the runtime
+orchestrator can call it:
+
+```text
+decide(state, choices)         one of K described options + calibrated confidence
+judge(state, criteria)         probability a described condition holds
+rate(state, ordinal criteria)  calibrated position on an ordinal scale
+```
+
+Von is for quick decisions inside defined processes: capture classification,
+stuck-category triage, escalation gating, cheap candidate pre-scoring. It never
+generates text and never mutates canonical state directly; its output is
+validated like any other model output, and low-confidence answers (default gate
+0.80) escalate to the generative LLM or the user.
 
 Potential future capabilities:
 
@@ -2622,16 +2660,14 @@ Do not implement these until required.
 
 # 94. Model Roles
 
-It may eventually be useful to distinguish:
+v0.1 distinguishes exactly two model roles:
 
 ```text
-fast/cheap model
-reasoning model
-vision model
-embedding model
+decision model    Von, local and fast — bounded choices, gating, triage
+generative model  z.ai Coding Plan GLM model — expansion, reranking, diagnosis, briefing
 ```
 
-But v0.1 should support the minimum model configuration necessary.
+Do not add vision, embedding, or additional model roles until required.
 
 Do not prematurely build a multi-model orchestration framework.
 
@@ -3276,7 +3312,7 @@ The next design session should specifically resolve:
 12. Backup/restore architecture.
 13. Calendar/commitment model.
 14. Daily planning algorithm.
-15. LLM provider/model strategy.
+15. LLM provider/model strategy. (Resolved: z.ai Coding Plan for generation; local Von for bounded decisions.)
 16. Exact preflight requirements for the user's machine.
 17. Deployment/service architecture.
 18. Test fixtures and acceptance suite.
